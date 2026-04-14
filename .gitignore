@@ -1,3 +1,7 @@
+requirements.txt
+*.txt
+.ipynb_checkpoints/
+*.ipynb
 *.pyc
 __pycache__/
 env_momoeLibrarySST/
