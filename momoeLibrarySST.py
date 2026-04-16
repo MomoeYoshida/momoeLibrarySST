@@ -19,7 +19,7 @@
 # #!pip freeze > requirements.txt
 
 # %%
-# Automatically export .py version of this library to ../Python_code/, version controlled by git.
+# Automatically export .py version of this library, version controlled by git connected to remote momoeLibrarySST.git.
 {
   "jupytext": {
     "formats": "ipynb,momoeLibrarySST.py"
