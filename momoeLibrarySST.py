@@ -28,9 +28,10 @@
 
 # %%
 import os
-from datetime import datetime
+import datetime
 from scipy.io import loadmat
 import h5py
+import math
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.dates as mdates
@@ -196,6 +197,160 @@ def save_ts_nc(start_date, end_date):
     ds_all = xr.concat(ds_list, dim="time")
     print('Saving a time-series into a netCDF file .nc...')
     ds_all.to_netcdf(filename)
+
+
+# %%
+"""
+night_plus_minus_hrs: local solar time ± night_plus_minus_hrs hours if you want to adjust the nighttime thresholds
+"""
+
+def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename, sun_csv_filename, 
+                                        start_date=datetime.date(2025, 1, 1), end_date=datetime.date(2025, 4, 1), 
+                                        night_plus_minus_hrs=0):
+    """Extract AIMS in-water temperature data (logger) nighttime-only based on the local sunset and sunrise times."""
+    
+    # 1. Read watertemp data and sun_rise&set data.
+    temp_df = pd.read_csv(aims_csv_filename)
+    sun_df = pd.read_csv(sun_csv_filename)
+
+    # Check UTC consistency.
+    if not (sun_df["utc_offset"] == "UTC+0:00").all():
+        raise ValueError(
+        "ERROR: sun_csv_file contains non-UTC+0:00 values in 'utc_offset'. "
+        "Please ensure all rows are 'UTC+0:00'.")
+    if not temp_df["time"].astype(str).str.endswith("+00:00").all():
+        raise ValueError(
+        "ERROR: aims_csv_file contains non-UTC+00:00 timestamps in 'time'. "
+        "Please ensure all rows end with '+00:00' (UTC).")
+
+    
+    sun_df['rise_date'] = pd.to_datetime(sun_df['rise_date'], format='ISO8601', utc=True)
+    sun_df['set_date']  = pd.to_datetime(sun_df['set_date'],  format='ISO8601', utc=True)
+    temp_df['time']     = pd.to_datetime(temp_df['time'],     format='ISO8601', utc=True)
+    sun_df = sun_df.sort_values(['set_date', 'rise_date']).reset_index(drop=True)
+    temp_df = temp_df.sort_values("time")
+
+    # 2. Create a list of dates from start_date to end_date (inclusive).
+    dates = []  # initialise
+    date_now = start_date
+    while date_now <= end_date:  # end_date (inclusive)
+        dates.append(pd.Timestamp(date_now, tz="UTC"))
+        date_now += datetime.timedelta(days=1)
+
+    # 3. Create numpy arrays of watertemp values and times from "temp_df".
+    watertemps = np.array(temp_df['qc_val'], dtype=float)
+    times = np.array(temp_df['time'])
+
+    # 4. Find nighttime watertemp values based on the "set_rise_df".
+    nighttime_means  = [] # initialise
+    nighttime_stdevs = []
+    pointcounts = [] # number of nighttime points used for the averaging for each date
+    
+    # Compute a nightime-only watertemp value corresponding to each date.
+    for day_start in dates:
+        day_end = day_start + pd.Timedelta(days=1)
+
+        # --- Sunset: last sunset BEFORE end of day ---
+        sunset_candidates = sun_df[sun_df["set_date"] <= day_end]
+        if sunset_candidates.empty:
+            raise ValueError(f"No sunset found before {day_end}")
+        sunset_time = sunset_candidates.iloc[-1]["set_date"]
+
+        # --- Sunrise: first sunrise AFTER start of day ---
+        sunrise_candidates = sun_df[sun_df["rise_date"] >= day_start]
+        if sunrise_candidates.empty:
+            raise ValueError(f"No sunrise found after {day_start}")
+        sunrise_time = sunrise_candidates.iloc[0]["rise_date"]
+
+        # 9. Night window (with optional buffer)
+        nighttime_lowerbound = sunset_time + pd.Timedelta(hours=night_plus_minus_hrs)
+        nighttime_upperbound = sunrise_time - pd.Timedelta(hours=night_plus_minus_hrs)
+        
+        # Find nighttime indices.
+        print(f'Finding watertemp values where {nighttime_lowerbound} < "times" < {nighttime_upperbound}...')
+        nighttime_indices = np.where((times > nighttime_lowerbound) & (times < nighttime_upperbound))[0]
+
+        # Count number of nighttime points
+        pointcount = len(nighttime_indices)
+        print(f'Found {pointcount} nighttime data points')
+        pointcounts.append(pointcount)
+        
+        # Compute mean & stdev of nighttime watertemp values using Welford.
+        mean_iw, stdev_iw = welford_mean_stdev(watertemps[nighttime_indices])
+        nighttime_means.append(mean_iw)
+        nighttime_stdevs.append(stdev_iw)
+        
+    
+    lat_vals = temp_df['lat'].unique()
+    lon_vals = temp_df['lon'].unique()
+
+    if len(lat_vals) != 1 or len(lon_vals) != 1:
+        raise ValueError("Latitude or longitude has multiple values — expected a single site.")
+
+    lat = lat_vals[0]
+    lon = lon_vals[0]
+
+    # 5. Save as NetCDF.
+    nighttime_means = np.array(nighttime_means, dtype=float)
+    nighttime_stdevs = np.array(nighttime_stdevs, dtype=float)
+    pointcounts = np.array(pointcounts, dtype=int)
+
+    time_out = np.array(dates, dtype="datetime64[ns]")
+
+    ds = xr.Dataset(
+        data_vars=dict(
+            nighttime_mean=("time", nighttime_means),
+            nighttime_stdev=("time", nighttime_stdevs),
+            nighttime_npoints=("time", pointcounts),
+        ),
+        coords=dict(
+            time=time_out,
+            lat=lat,
+            lon=lon
+        ),
+        attrs=dict(
+            description="Nighttime-only in-water temperature statistics derived from AIMS logger",
+            method="Sunset-to-sunrise windowing with UTC-based astronomical times",
+            night_buffer_hours=night_plus_minus_hrs
+        )
+    )
+
+    def fmt(x):
+        return f"{x:.4f}"
+
+    lat_str = fmt(lat).replace(".", "p").replace("-", "minus")
+    lon_str = fmt(lon).replace(".", "p").replace("-", "minus")
+
+    output_nc = home_dir+'/Output/'+f"nighttime_AIMS_InWT_lat{lat_str}_lon{lon_str}.nc"
+
+    # 6. Save NetCDF
+    ds.to_netcdf(output_nc)
+
+    print(f"\nSaved NetCDF file: {output_nc}")
+    
+
+# %%
+def welford_mean_stdev(values):
+    """Compute mean and sample stdev using Welford’s algorithm."""
+    n = 0
+    mean = 0.0
+    M2 = 0.0
+
+    for v in values:
+        if np.isnan(v):
+            continue
+        n += 1
+        delta = v - mean
+        mean += delta / n
+        M2 += delta * (v - mean)
+
+    if n == 0:
+        return float('nan'), float('nan')
+    if n == 1:
+        return mean, float('nan')   # mean is valid, stdev not defined
+
+    stdev = math.sqrt(M2 / (n - 1))  # sample stdev
+    return mean, stdev
 
 
 # %%
