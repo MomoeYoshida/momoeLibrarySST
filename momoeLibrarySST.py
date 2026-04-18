@@ -378,7 +378,7 @@ def extract_lat_lon(iwt_file):
 
 # %%
 def extract_pixel_timeseries(sst_file, iwt_file):
-    """Merge (matching dates) and extract time series of InWT and SST data."""
+    """Merge (matching dates) and extract time series of InWT, SST, SST–InWT and RMSE."""
     lat_input, lon_input = extract_lat_lon(iwt_file)
     
     sst_ds = xr.open_dataset(sst_file)
@@ -398,6 +398,15 @@ def extract_pixel_timeseries(sst_file, iwt_file):
     sst_pixel, iwt_ds = xr.align(sst_pixel, iwt_ds, join="inner")
     iwt_ds = iwt_ds.drop_vars(["lat", "lon"], errors="ignore")
     merged_ds = xr.merge([sst_pixel, iwt_ds])
+
+    # Calculate SST – InWT.
+    ts_sst = merged_ds["sst"]
+    ts_iwt = merged_ds["nighttime_mean"]
+    merged_ds["sst_minus_nighttime_mean"] = ts_sst - ts_iwt
+
+    # Calculate RMSE between SST and InWT.
+    rmse_val = np.sqrt(((ts_sst - ts_iwt) ** 2).mean().values) # single scalar
+    merged_ds["rmse"] = xr.DataArray(rmse_val)
 
     # Save NetCDF.
     iwt_base = os.path.basename(iwt_file).replace(".nc", "") # remove ".nc"
