@@ -40,6 +40,7 @@ import pandas as pd
 import numpy as np
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import re
 
 # %%
 # HPC
@@ -351,6 +352,28 @@ def welford_mean_stdev(values):
 
     stdev = math.sqrt(M2 / (n - 1))  # sample stdev
     return mean, stdev
+
+
+# %%
+def extract_lat_lon(iwt_file):
+    """Extract lat and lon values from input filename (InWT data file e.g., nighttime_AIMS_InWT_latminus18p5691_lon146p4823.nc)."""
+    # Extract the lat/lon part using regex
+    match = re.search(r'lat([a-z0-9p\-]+)_lon([a-z0-9p\-]+)', iwt_file)
+    
+    if not match:
+        raise ValueError("Could not find lat/lon in filename")
+    
+    lat_str, lon_str = match.groups()
+    
+    # Convert encoding back to float
+    def decode(coord):
+        coord = coord.replace("minus", "-").replace("p", ".")
+        return float(coord)
+    
+    lat_input = decode(lat_str)
+    lon_input = decode(lon_str)
+    
+    return lat_input, lon_input
 
 
 # %%
