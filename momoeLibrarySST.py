@@ -423,6 +423,7 @@ def extract_pixel_timeseries(sst_file, iwt_file):
 
     mark_pixel_point(pixel_lat, lat_input, pixel_lon, lon_input)
     plot_ts(merged_ds)
+    plot_ts_diff(merged_ds)
     
     return merged_ds
 
@@ -477,6 +478,47 @@ def plot_ts(ds, transparent=False):
     plt.tight_layout()
     plt.show()
 
+
+# %%
+def plot_ts_diff(ds, transparent=False):
+    fig, ax1 = plt.subplots(figsize=(12, 8))
+
+    if transparent:
+        fig.patch.set_alpha(0)
+        ax1.set_facecolor((0, 0, 0, 0))
+
+    # --- Extract variables safely ---
+    ts_diff = ds["sst_minus_nighttime_mean"]
+    ts_cm  = ds["correlation_map"]
+
+    # --- Left axis (Temperature) ---
+    
+    ax1.plot(ts_diff.time, ts_diff, color="blue", marker="o", label="SST–InWT")
+    ax1.set_ylabel("SST–InWT (°C)", color="black")
+    ax1.axhline(y=0, color="black", linestyle="--")
+
+
+    # --- Right axis (other variables) ---
+    ax2 = ax1.twinx()
+    ax2.plot(ts_cm.time, ts_cm, color="tab:red", marker="s", label="Correlation Map")
+    ax2.set_ylabel("Correlation Map", color="tab:red")
+    ax2.tick_params(axis='y', labelcolor="tab:red")
+
+    # --- X axis ---
+    ax1.set_xlabel("Date")
+    ax1.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    ax1.tick_params(axis='x', rotation=60)
+
+    # --- Legend (combined) ---
+    lines, labels = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    lines += lines2
+    labels += labels2
+    ax1.legend(lines, labels, loc="best")
+
+    plt.tight_layout()
+    plt.show()
 
 # %%
 """
