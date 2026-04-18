@@ -72,7 +72,7 @@ def generate_julian_days(start_date, end_date):
 # Usage: julian_to_datetime("2025_031")
 def julian_to_datetime(julian_str):
     """Convert julian date to calendar date."""
-    return datetime.strptime(julian_str, "%Y_%j")
+    return datetime.datetime.strptime(julian_str, "%Y_%j")
 
 
 # %%
