@@ -377,27 +377,96 @@ def extract_lat_lon(iwt_file):
 
 
 # %%
-def extract_pixel_timeseries(ds, lat_input, lon_input):
-    """Extract time series at closest pixel to given lat/lon."""
+def extract_pixel_timeseries(sst_file, iwt_file):
+    """Merge (matching dates) and extract time series of InWT and SST data."""
+    lat_input, lon_input = extract_lat_lon(iwt_file)
+    
+    sst_ds = xr.open_dataset(sst_file)
+    iwt_ds = xr.open_dataset(iwt_file)
     
     # Extract both variables at nearest pixel.
-    pixel_ds = ds.sel(lat=lat_input, lon=lon_input, method="nearest")
+    sst_pixel = sst_ds.sel(lat=lat_input, lon=lon_input, method="nearest")
 
-    # Extract variables.
-    ts_sst = pixel_ds["sst"]
-    ts_cm  = pixel_ds["correlation_map"]
-    
-    # Print actual selected location
-    pixel_lat = float(pixel_ds.lat.values)
-    pixel_lon = float(pixel_ds.lon.values)
+    # Print actual selected location.
+    pixel_lat = float(sst_pixel.lat.values)
+    pixel_lon = float(sst_pixel.lon.values)
     
     print(f"Requested: lat={lat_input}, lon={lon_input}")
     print(f"Closest pixel: lat={pixel_lat:.3f}, lon={pixel_lon:.3f}") # display artifact
 
+    # Align time (intersection only) and merge datasets.
+    sst_pixel, iwt_ds = xr.align(sst_pixel, iwt_ds, join="inner")
+    iwt_ds = iwt_ds.drop_vars(["lat", "lon"], errors="ignore")
+    merged_ds = xr.merge([sst_pixel, iwt_ds])
+
+    # Save NetCDF.
+    iwt_base = os.path.basename(iwt_file).replace(".nc", "") # remove ".nc"
+    sst_base = os.path.basename(sst_file).replace("gbr_", "")
+    time_vals = pd.to_datetime(merged_ds.time.values)
+    start_date = time_vals.min().strftime("%Y%m%d")
+    end_date   = time_vals.max().strftime("%Y%m%d")
+    date_part = f"{start_date}-{end_date}"
+    sst_base = sst_base.split("_timeseries_")[0] + f"_timeseries_{date_part}.nc"
+    filename = f"{iwt_base}_{sst_base}"
+    output_nc = home_dir+'/Output/'+filename
+    merged_ds.to_netcdf(output_nc)
+    print(f"\nSaved NetCDF file: {output_nc}")
+
     mark_pixel_point(pixel_lat, lat_input, pixel_lon, lon_input)
-    plot_ts(ts_sst, ts_cm)
+    plot_ts(merged_ds)
     
-    return pixel_ds
+    return merged_ds
+
+
+# %%
+def plot_ts(ds, transparent=False):
+    fig, ax1 = plt.subplots(figsize=(12, 8))
+
+    if transparent:
+        fig.patch.set_alpha(0)
+        ax1.set_facecolor((0, 0, 0, 0))
+
+    # --- Extract variables safely ---
+    ts_sst = ds["sst"]
+    ts_iwt = ds["nighttime_mean"]
+    ts_cm  = ds["correlation_map"]
+
+    # --- Left axis (Temperature) ---
+    temps = []
+    
+    ax1.plot(ts_sst.time, ts_sst, color="lightblue", marker="o", label="SST")
+    temps.append(ts_sst.values)
+
+    ax1.plot(ts_iwt.time, ts_iwt, color="darkblue", marker="o", label="InWT")
+    temps.append(ts_iwt.values)
+
+    ax1.set_ylabel("Temperature (°C)", color="black")
+
+    # Dynamic ylim
+    all_temp = np.concatenate([t.flatten() for t in temps])
+    ax1.set_ylim(all_temp.min() - 0.5, all_temp.max() + 0.5)
+
+    # --- Right axis (other variables) ---
+    ax2 = ax1.twinx()
+    ax2.plot(ts_cm.time, ts_cm, color="tab:red", marker="s", label="Correlation Map")
+    ax2.set_ylabel("Correlation Map", color="tab:red")
+    ax2.tick_params(axis='y', labelcolor="tab:red")
+
+    # --- X axis ---
+    ax1.set_xlabel("Date")
+    ax1.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    ax1.tick_params(axis='x', rotation=60)
+
+    # --- Legend (combined) ---
+    lines, labels = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    lines += lines2
+    labels += labels2
+    ax1.legend(lines, labels, loc="best")
+
+    plt.tight_layout()
+    plt.show()
 
 
 # %%
@@ -450,44 +519,6 @@ def mark_pixel_point(pixel_lat, lat_input, pixel_lon, lon_input, extent=(140,155
     ax2.scatter(lon_input, lat_input, color=point_color, transform=data_crs, s=point_size)
     
     
-    plt.show()
-
-
-# %%
-def plot_ts(ts_sst, ts_cm, transparent=False):
-    fig, ax1 = plt.subplots(figsize=(8, 4))
-
-    if transparent:
-        # Transparent figure background
-        fig.patch.set_alpha(0)
-        ax1.set_facecolor((0, 0, 0, 0))
-    
-    # --- Left axis (SST) ---
-    ax1.plot(ts_sst.time, ts_sst, color="tab:blue", marker="o", label="SST")
-    ax1.set_ylabel("SST (°C)", color="tab:blue")
-    ax1.tick_params(axis='y', labelcolor="tab:blue")
-    
-    # --- Right axis (correlation_map) ---
-    ax2 = ax1.twinx()
-    cm_min, cm_max = 8, 32
-    ax2.plot(ts_cm.time, ts_cm, color="tab:red", marker="s", label="Correlation Map")
-    ax2.set_ylabel("Correlation Map", color="tab:red")
-    ax2.tick_params(axis='y', labelcolor="tab:red")
-    ax2.set_ylim(cm_min, cm_max)
-    ax2.set_yticks(list(range(cm_min, cm_max+1, 4)))
-    
-    # --- X axis ---
-    ax1.set_xlabel("Date")
-    ax1.xaxis.set_major_locator(mdates.DayLocator(interval=1))
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
-    ax1.tick_params(axis='x', rotation=60)
-    
-    # # --- Combine legends ---
-    # lines1, labels1 = ax1.get_legend_handles_labels()
-    # lines2, labels2 = ax2.get_legend_handles_labels()
-    # ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
-    
-    plt.tight_layout()
     plt.show()
 
 # %%
