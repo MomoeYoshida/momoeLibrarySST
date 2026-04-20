@@ -328,7 +328,7 @@ def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename, sun_csv_filename,
     ds.to_netcdf(output_nc)
 
     print(f"\nSaved NetCDF file: {output_nc}")
-    
+
 
 # %%
 def welford_mean_stdev(values):
@@ -519,6 +519,27 @@ def plot_ts_diff(ds, transparent=False):
 
     plt.tight_layout()
     plt.show()
+
+
+# %%
+def plot_scatter(pixel_ts, x="correlation_map", y="sst_minus_nighttime_mean", xlabel="Correlation Map", ylabel="SST – InWT (°C)"):
+    fig, ax = plt.subplots(figsize=(6, 6))
+    
+    # --- Extract variables safely ---
+    dep_var = pixel_ts[y]
+    indep_var  = pixel_ts[x]
+    
+    ax.scatter(indep_var, dep_var, color="black")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.axhline(0, color="black", linestyle="--") # horizontal
+    ax.axvline(8, color="grey") # vertical
+    ax.axvline(16, color="grey")
+    ax.axvline(32, color="grey")
+    
+    plt.tight_layout()
+    plt.show()
+
 
 # %%
 """
