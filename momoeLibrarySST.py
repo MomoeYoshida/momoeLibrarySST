@@ -41,6 +41,9 @@ import numpy as np
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import re
+from astral import LocationInfo
+from astral.sun import sun
+import pytz
 
 # %%
 # HPC
@@ -205,7 +208,7 @@ def save_ts_nc(start_date, end_date):
 night_plus_minus_hrs: local solar time ± night_plus_minus_hrs hours if you want to adjust the nighttime thresholds
 """
 
-def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename, sun_csv_filename, 
+def extract_nighttime_AIMS_InWT_stdvals_single_site(aims_csv_filename, sun_csv_filename, 
                                         start_date=datetime.date(2025, 1, 1), end_date=datetime.date(2025, 4, 1), 
                                         night_plus_minus_hrs=0):
     """Extract AIMS in-water temperature data (logger) nighttime-only based on the local sunset and sunrise times."""
@@ -328,6 +331,116 @@ def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename, sun_csv_filename,
     ds.to_netcdf(output_nc)
 
     print(f"\nSaved NetCDF file: {output_nc}")
+
+
+# %%
+def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename=home_dir+"/Data/in-water/"+"AIMS_temp_loggers_20250111_0430.csv", 
+                                        start_date=datetime.date(2025, 1, 11), end_date=datetime.date(2025, 4, 30), 
+                                        night_plus_minus_hrs=0):
+    """
+    Compute nighttime mean/std per day per logger (lat, lon, depth).
+    Nighttime defined using Astral sunrise/sunset (UTC).
+    """
+    # -----------------------------
+    # 1. Load + preprocess
+    # -----------------------------
+    df = pd.read_csv(aims_csv_filename)
+    df["time"] = pd.to_datetime(df["time"], format="mixed", dayfirst=True, utc=True)
+    df = df.sort_values("time")
+
+    # -----------------------------
+    # 2. Group by logger
+    # -----------------------------
+    group_cols = ["deployment_id", "lat", "lon", "depth"]
+    grouped = df.groupby(group_cols)
+
+    # -----------------------------
+    # 3. Loop over loggers
+    # -----------------------------
+    results = []
+    for (dep_id, lat, lon, depth), g in grouped:
+        print(f'Working on {dep_id, lat, lon, depth}...')
+        g_times = g["time"]
+        #g_temps = g["qc_val"].values.astype(float)
+
+        # Astral location (UTC timezone)
+        location = LocationInfo(latitude=lat, longitude=lon)
+        tz = pytz.UTC
+
+        # -------------------------
+        # 4. Loop over days
+        # -------------------------
+        current_date = start_date
+        while current_date <= end_date:
+            print(f'Working on {current_date}...')
+            date_ts = pd.Timestamp(current_date, tz="UTC")
+            next_date_ts = date_ts + pd.Timedelta(days=1)
+
+            # Astral requires date in local tz → we use UTC explicitly
+            s = sun(location.observer, date=current_date, tzinfo=tz)
+            sunset = s["sunset"]
+            sunrise_next = sun(location.observer, date=current_date + datetime.timedelta(days=1),tzinfo=tz)["sunrise"]
+
+            # Apply buffer
+            night_start = sunset + pd.Timedelta(hours=night_plus_minus_hrs)
+            night_end   = sunrise_next - pd.Timedelta(hours=night_plus_minus_hrs)
+
+            # Filter indices
+            mask = (g_times >= night_start) & (g_times <= night_end)
+            print(f'Finding watertemp values where {night_start} <= "times" <= {night_end}...')
+            night_vals = g.loc[mask, "qc_val"].values.astype(float)
+            pointcount = len(night_vals)
+            print(f'Found {pointcount} nighttime data points')
+
+            if pointcount == 0:
+                current_date += datetime.timedelta(days=1)
+                continue  # 🔥 skip this day entirely
+            
+            mean_val = np.mean(night_vals)
+            # TNT: may change here to be compared with SST std
+            std_val  = np.std(night_vals, ddof=1)
+
+            results.append({"date": current_date, "deployment_id": dep_id, "lat": lat, "lon": lon, "depth": depth,
+                            "nighttime_mean": mean_val, "nighttime_stdev": std_val, "pointcount": pointcount})
+            current_date += datetime.timedelta(days=1)
+
+    # -----------------------------
+    # 5. Convert to DataFrame
+    # -----------------------------
+    out_df = pd.DataFrame(results)
+    min_lat = out_df["lat"].min()
+    max_lat = out_df["lat"].max()
+    min_lon = out_df["lon"].min()
+    max_lon = out_df["lon"].max()
+    
+    start_str = pd.to_datetime(out_df["date"]).min().strftime("%Y%m%d")
+    end_str   = pd.to_datetime(out_df["date"]).max().strftime("%Y%m%d")
+
+    min_lat_str = fmt(min_lat)
+    max_lat_str = fmt(max_lat)
+    min_lon_str = fmt(min_lon)
+    max_lon_str = fmt(max_lon)
+
+    # -----------------------------
+    # 6. Save CSV
+    # -----------------------------
+    output_csv = (
+    home_dir + "/Output/"
+    + f"nighttime_AIMS_"
+    + f"lat{min_lat_str}_to_{max_lat_str}_"
+    + f"lon{min_lon_str}_to_{max_lon_str}_"
+    + f"{start_str}_{end_str}.csv")
+
+    out_df.to_csv(output_csv, index=False)
+
+    print(f"Saved CSV: {output_csv}")
+
+    return out_df
+
+
+# %%
+def fmt(x):
+    return f"{x:.4f}".replace(".", "p").replace("-", "minus")
 
 
 # %%
