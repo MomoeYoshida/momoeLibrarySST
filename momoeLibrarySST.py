@@ -44,6 +44,7 @@ import re
 from astral import LocationInfo
 from astral.sun import sun
 import pytz
+from pathlib import Path
 
 # %%
 # HPC
@@ -204,6 +205,91 @@ def save_ts_nc(start_date, end_date):
 
 
 # %%
+# Assumptions: one deployment_id per (lat, lon, depth) pair
+def save_InWT_ts_nc(csvfile=home_dir+"/Output/nighttime_AIMS_latminus23p9583_to_minus14p6485_lon145p3722_to_152p0739_20250111_20250429.csv"):
+    
+    # -----------------------------
+    # 1. Load CSV
+    # -----------------------------
+    df = pd.read_csv(csvfile)
+    
+    # Convert date to datetime
+    df["date"] = pd.to_datetime(df["date"])
+    
+    # -----------------------------
+    # 2. Get unique coordinates
+    # -----------------------------
+    times = np.sort(df["date"].unique())
+    lats = np.sort(df["lat"].unique())
+    lons = np.sort(df["lon"].unique())
+    depths = np.sort(df["depth"].unique())
+    
+    # -----------------------------
+    # 3. Create empty arrays
+    # -----------------------------
+    shape = (len(times), len(lats), len(lons), len(depths))
+    
+    night_mean = np.full(shape, np.nan)
+    night_std = np.full(shape, np.nan)
+    pointcount = np.full(shape, np.nan)
+    
+    # deployment_id does NOT vary with time
+    deploy_shape = (len(lats), len(lons), len(depths))
+    deployment_id = np.full(deploy_shape, np.nan, dtype=object)
+    
+    # -----------------------------
+    # 4. Create index maps
+    # -----------------------------
+    time_index = {t: i for i, t in enumerate(times)}
+    lat_index = {v: i for i, v in enumerate(lats)}
+    lon_index = {v: i for i, v in enumerate(lons)}
+    depth_index = {v: i for i, v in enumerate(depths)}
+    
+    # -----------------------------
+    # 5. Fill arrays
+    # -----------------------------
+    for _, row in df.iterrows():
+        ti = time_index[row["date"]]
+        yi = lat_index[row["lat"]]
+        xi = lon_index[row["lon"]]
+        zi = depth_index[row["depth"]]
+    
+        night_mean[ti, yi, xi, zi] = row["nighttime_mean"]
+        night_std[ti, yi, xi, zi] = row["nighttime_stdev"]
+        pointcount[ti, yi, xi, zi] = row["pointcount"]
+    
+        # assign deployment_id once (same across time)
+        if pd.isna(deployment_id[yi, xi, zi]):
+            deployment_id[yi, xi, zi] = row["deployment_id"]
+    
+    # -----------------------------
+    # 6. Create xarray Dataset
+    # -----------------------------
+    ds = xr.Dataset(
+        {
+            "nighttime_mean": (["time", "lat", "lon", "depth"], night_mean),
+            "nighttime_stdev": (["time", "lat", "lon", "depth"], night_std),
+            "pointcount": (["time", "lat", "lon", "depth"], pointcount),
+            "deployment_id": (["lat", "lon", "depth"], deployment_id),
+        },
+        coords={
+            "time": times,
+            "lat": lats,
+            "lon": lons,
+            "depth": depths,
+        },
+    )
+    
+    # -----------------------------
+    # 7. Save to NetCDF
+    # -----------------------------
+    outfile = Path(csvfile).with_suffix(".nc")
+    ds.to_netcdf(outfile)
+
+    
+    print(ds)
+
+# %%
 """
 night_plus_minus_hrs: local solar time ± night_plus_minus_hrs hours if you want to adjust the nighttime thresholds
 """
@@ -334,7 +420,7 @@ def extract_nighttime_AIMS_InWT_stdvals_single_site(aims_csv_filename, sun_csv_f
 
 
 # %%
-def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename=home_dir+"/Data/in-water/"+"AIMS_temp_loggers_20250111_0430.csv", 
+def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename=home_dir+"/Data/in-water/"+"AIMS_temp_loggers_20250111_20250430.csv", 
                                         start_date=datetime.date(2025, 1, 11), end_date=datetime.date(2025, 4, 30), 
                                         night_plus_minus_hrs=0):
     """
