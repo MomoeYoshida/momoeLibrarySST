@@ -223,7 +223,7 @@ def save_ts_nc(start_date, end_date, thin_name=""):
 
 
 # %%
-# TNT: Add a variable dist_coast_km (Distance-to-coast).
+
 def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_timeseries_20250111-20250131.nc",
                                       inwt_ts_filename = home_dir+"/Output/nighttime_AIMS_latminus23p9583_to_minus12p3923_lon143p7398_to_152p6686_20250111_20250429.nc"):
 
@@ -326,6 +326,42 @@ def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_
     
     df["sst_lat"] = nearest_lat
     df["sst_lon"] = nearest_lon
+
+    
+    # =========================
+    # Compute distance-to-coast in km
+    # =========================
+    # Create a list of geographic/geometric point objects.
+    geometry = gpd.points_from_xy(
+        df.lon,
+        df.lat
+    )
+    
+    # Convert to GeoDataFrame.
+    gdf = gpd.GeoDataFrame(
+        df,
+        geometry=geometry,
+        crs="EPSG:4326" # corresponds to lon/lat
+    )
+    
+    # Load coastline dataset.
+    coastline = gpd.read_file(home_dir+'/Data/coastline/ne_10m_coastline/ne_10m_coastline.shp') # including major islands; https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-coastline/
+    if coastline.crs == gdf.crs:
+        print("CRS matches.")
+    else:
+        raise ValueError("CRS mismatch")
+    
+    # Reproject in meters for distance.
+    metric_crs = "EPSG:3577" # projected coordinate system for Australia
+    gdf_m = gdf.to_crs(metric_crs)
+    coastline_m = coastline.to_crs(metric_crs)
+    
+    # Extract coastline boundary.
+    coast_geom = coastline_m.geometry.union_all()
+    
+    # Compute distance to coast (Shortest (perpendicular) distance from each point to the nearest point on the coastline line).
+    gdf_m["dist_coast_km"] = gdf_m.geometry.distance(coast_geom) / 1000
+    df["dist_coast_km"] = gdf_m["dist_coast_km"].values
     
     # =========================
     # Final dataframe
