@@ -541,9 +541,9 @@ def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename=home_dir+"/Data/in-wat
                 current_date += datetime.timedelta(days=1)
                 continue  # 🔥 skip this day entirely
             
-            mean_val = np.mean(night_vals)
+            mean_val = np.nanmean(night_vals)
             # TNT: may change here to be compared with SST std
-            std_val  = np.std(night_vals, ddof=1)
+            std_val  = np.nanstd(night_vals) # default: ddof=0, within-night variability
 
             results.append({"date": current_date, "deployment_id": dep_id, "lat": lat, "lon": lon, "depth": depth,
                             "nighttime_mean": mean_val, "nighttime_stdev": std_val, "pointcount": pointcount})
