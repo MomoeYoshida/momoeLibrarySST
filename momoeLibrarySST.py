@@ -45,6 +45,9 @@ from astral import LocationInfo
 from astral.sun import sun
 import pytz
 from pathlib import Path
+import geopandas as gpd
+from shapely.geometry import Point
+import plotly.express as px
 
 # %%
 # HPC
@@ -152,14 +155,19 @@ def trim_da(da, extent=(140,155,-25,-10)):
 
 
 # %%
-# Usage: save_ts_nc("20250131", "20250205")
+
+# %%
+# Usage: save_ts_nc("20250131", "20250205", "_thin_5")
+# thin_name="" for control/original
 # TNT: may need to add some codes to ensure coordinates match between sst and cm and files?
-# HPC: Save this as .py > Upload on HPC Code/ > Run a function in the compute node
+# HPC: Save this as .py > Upload on HPC Python_code/lib/ > Run a function in the compute node
+# scp '/Users/momotalo/Library/CloudStorage/OneDrive-JamesCookUniversity/PhD_MomoeYoshida/Coding/blended_home/Jupyter/momoeLibrarySST.py' jc501791@zodiac.hpc.jcu.edu.au:'/gpfs01/v2/Q9157/momoe/geo_polar_blended_sst/Linux_JCUHPC/blended_home/Python_code/lib/momoeLibrarySST.py'
+# comment off and on for home_dir
 # Default extent: GBR
 
-def save_ts_nc(start_date, end_date):
+def save_ts_nc(start_date, end_date, thin_name=""):
     """Save time series of variables in a netCDF file.""" 
-    filename = home_dir+'/Output/'+"gbr_sst_cm_timeseries_"+start_date+"-"+end_date+".nc"
+    filename = home_dir+'/Output/'+"gbr_sst_cm_er_var_timeseries"+thin_name+"_"+start_date+"-"+end_date+".nc"
     # --- Delete existing file if it exists ---
     if os.path.exists(filename):
         print(f"Deleting existing file: {filename}")
@@ -172,12 +180,20 @@ def save_ts_nc(start_date, end_date):
     for jd in julian_days:
         print(f'***Processing {jd}...')
         # --- SST ---
-        sst = extract_var_from_l4_mat_file("sst_analysis", jd, "/Analysis")
+        sst = extract_var_from_l4_mat_file("sst_analysis", jd, "/Analysis"+thin_name)
         da_sst = trim_da(add_lats_lons(sst))
     
         # --- Correlation map ---
-        cm = extract_var_from_l4_mat_file("correlation_map", jd, "/Analysis")
+        cm = extract_var_from_l4_mat_file("correlation_map", jd, "/Analysis"+thin_name)
         da_cm = trim_da(add_lats_lons(cm))
+
+        # --- Error analysis ---
+        er = extract_var_from_l4_mat_file("error_analysis", jd, "/Analysis"+thin_name)
+        da_er = trim_da(add_lats_lons(er))
+
+        # --- SST variability ---
+        sst_var = extract_var_from_l4_mat_file("sst_variability", jd, "/Analysis"+thin_name)
+        da_sst_var = trim_da(add_lats_lons(sst_var))
     
         # --- Convert time ---
         time = julian_to_datetime(jd)
@@ -186,7 +202,9 @@ def save_ts_nc(start_date, end_date):
         ds_day = xr.Dataset(
             {
                 "sst": da_sst,
-                "correlation_map": da_cm
+                "correlation_map": da_cm,
+                "error_analysis": da_er,
+                "sst_variability": da_sst_var
             }
         )
     
@@ -202,6 +220,140 @@ def save_ts_nc(start_date, end_date):
     ds_all = xr.concat(ds_list, dim="time")
     print('Saving a time-series into a netCDF file .nc...')
     ds_all.to_netcdf(filename)
+
+
+# %%
+# TNT: Add a variable dist_coast_km (Distance-to-coast).
+def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_timeseries_20250111-20250131.nc",
+                                      inwt_ts_filename = home_dir+"/Output/nighttime_AIMS_latminus23p9583_to_minus12p3923_lon143p7398_to_152p6686_20250111_20250429.nc"):
+
+    sst_ts_ds = xr.open_dataset(sst_ts_filename)
+    inwt_ts_ds = xr.open_dataset(inwt_ts_filename)
+
+    # =========================
+    # Restrict to overlapping dates only
+    # =========================
+    common_times = np.intersect1d(
+        sst_ts_ds.time.values,
+        inwt_ts_ds.time.values
+    )
+    
+    sst_ds = sst_ts_ds.sel(time=common_times)
+    inwt_ds = inwt_ts_ds.sel(time=common_times)
+    
+    print(f"Number of overlapping dates: {len(common_times)}")
+    
+    # =========================
+    # Convert in-water dataset to dataframe
+    # (only keep valid nighttime_mean values)
+    # =========================
+    df = (
+        inwt_ds[
+            [
+                "nighttime_mean",
+                "nighttime_stdev",
+                "pointcount",
+                "deployment_id"
+            ]
+        ]
+        .to_dataframe()
+        .reset_index()
+    )
+    print(df.head())
+    
+    # Remove NaNs; select only the True rows
+    df = df[np.isfinite(df["nighttime_mean"])]
+    
+    print(f"Number of valid logger observations: {len(df)}") # daily
+    print(df.head())
+    
+    # =========================
+    # Find nearest SST pixel
+    # and extract SST + correlation_map
+    # =========================
+    sst_list = []
+    corr_list = []
+    
+    for _, row in df.iterrows():
+    
+        t = row["time"]
+        lat = row["lat"]
+        lon = row["lon"]
+    
+        # nearest SST pixel
+        sst_pixel = sst_ds.sel(
+            time=t,
+            lat=lat,
+            lon=lon,
+            method="nearest"
+        )
+    
+        sst_list.append(float(sst_pixel["sst"].values))
+        corr_list.append(float(sst_pixel["correlation_map"].values))
+    
+    # Add to dataframe
+    df["sst"] = sst_list
+    df["correlation_map"] = corr_list
+    
+    # =========================
+    # Compute SST mismatch
+    # =========================
+    # deltaT = SST — InWT
+    df["deltaT"] = df["sst"] - df["nighttime_mean"]
+    
+    # =========================
+    # Optional:
+    # SST pixel coordinates actually used
+    # =========================
+    nearest_lat = []
+    nearest_lon = []
+    
+    for _, row in df.iterrows():
+    
+        t = row["time"]
+        lat = row["lat"]
+        lon = row["lon"]
+    
+        sst_pixel = sst_ds.sel(
+            time=t,
+            lat=lat,
+            lon=lon,
+            method="nearest"
+        )
+    
+        nearest_lat.append(float(sst_pixel["lat"].values))
+        nearest_lon.append(float(sst_pixel["lon"].values))
+    
+    df["sst_lat"] = nearest_lat
+    df["sst_lon"] = nearest_lon
+    
+    # =========================
+    # Final dataframe
+    # =========================
+    print(df.head())
+    matchup_ds = xr.Dataset.from_dataframe(df)
+    df = df.reset_index(drop=True)
+    min_lat = df["lat"].min()
+    max_lat = df["lat"].max()
+    min_lon = df["lon"].min()
+    max_lon = df["lon"].max()
+    
+    # =========================
+    # Save
+    # =========================
+    min_lat_str = fmt(min_lat)
+    max_lat_str = fmt(max_lat)
+    min_lon_str = fmt(min_lon)
+    max_lon_str = fmt(max_lon)
+    start_date = pd.to_datetime(common_times.min()).strftime("%Y%m%d")
+    end_date   = pd.to_datetime(common_times.max()).strftime("%Y%m%d")
+    outfile = home_dir + f"/Output/sst_InWT_matchups_lat{min_lat_str}_to_{max_lat_str}_lon{min_lon_str}_to_{max_lon_str}_{start_date}-{end_date}.nc"
+    
+    matchup_ds.to_netcdf(outfile)
+    
+    print(f"Saved: {outfile}")
+    
+    return df
 
 
 # %%
@@ -288,6 +440,112 @@ def save_InWT_ts_nc(csvfile=home_dir+"/Output/nighttime_AIMS_latminus23p9583_to_
 
     
     print(ds)
+
+
+# %%
+def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename=home_dir+"/Data/in-water/"+"AIMS_temp_loggers_20250111_20250430.csv", 
+                                        start_date=datetime.date(2025, 1, 11), end_date=datetime.date(2025, 4, 30), 
+                                        night_plus_minus_hrs=0):
+    """
+    Compute nighttime mean/std per day per logger (lat, lon, depth).
+    Nighttime defined using Astral sunrise/sunset (UTC).
+    """
+    # -----------------------------
+    # 1. Load + preprocess
+    # -----------------------------
+    df = pd.read_csv(aims_csv_filename)
+    df["time"] = pd.to_datetime(df["time"], format="mixed", dayfirst=True, utc=True)
+    df = df.sort_values("time")
+
+    # -----------------------------
+    # 2. Group by logger
+    # -----------------------------
+    group_cols = ["deployment_id", "lat", "lon", "depth"]
+    grouped = df.groupby(group_cols)
+
+    # -----------------------------
+    # 3. Loop over loggers
+    # -----------------------------
+    results = []
+    for (dep_id, lat, lon, depth), g in grouped:
+        print(f'Working on {dep_id, lat, lon, depth}...')
+        g_times = g["time"]
+        #g_temps = g["qc_val"].values.astype(float)
+
+        # Astral location (UTC timezone)
+        location = LocationInfo(latitude=lat, longitude=lon)
+        tz = pytz.UTC
+
+        # -------------------------
+        # 4. Loop over days
+        # -------------------------
+        current_date = start_date
+        while current_date <= end_date:
+            print(f'Working on {current_date}...')
+            date_ts = pd.Timestamp(current_date, tz="UTC")
+            next_date_ts = date_ts + pd.Timedelta(days=1)
+
+            # Astral requires date in local tz → we use UTC explicitly
+            s = sun(location.observer, date=current_date, tzinfo=tz)
+            sunset = s["sunset"]
+            sunrise_next = sun(location.observer, date=current_date + datetime.timedelta(days=1),tzinfo=tz)["sunrise"]
+
+            # Apply buffer
+            night_start = sunset + pd.Timedelta(hours=night_plus_minus_hrs)
+            night_end   = sunrise_next - pd.Timedelta(hours=night_plus_minus_hrs)
+
+            # Filter indices
+            mask = (g_times >= night_start) & (g_times <= night_end)
+            print(f'Finding watertemp values where {night_start} <= "times" <= {night_end}...')
+            night_vals = g.loc[mask, "qc_val"].values.astype(float)
+            pointcount = len(night_vals)
+            print(f'Found {pointcount} nighttime data points')
+
+            if pointcount == 0:
+                current_date += datetime.timedelta(days=1)
+                continue  # 🔥 skip this day entirely
+            
+            mean_val = np.mean(night_vals)
+            # TNT: may change here to be compared with SST std
+            std_val  = np.std(night_vals, ddof=1)
+
+            results.append({"date": current_date, "deployment_id": dep_id, "lat": lat, "lon": lon, "depth": depth,
+                            "nighttime_mean": mean_val, "nighttime_stdev": std_val, "pointcount": pointcount})
+            current_date += datetime.timedelta(days=1)
+
+    # -----------------------------
+    # 5. Convert to DataFrame
+    # -----------------------------
+    out_df = pd.DataFrame(results)
+    min_lat = out_df["lat"].min()
+    max_lat = out_df["lat"].max()
+    min_lon = out_df["lon"].min()
+    max_lon = out_df["lon"].max()
+    
+    start_str = pd.to_datetime(out_df["date"]).min().strftime("%Y%m%d")
+    end_str   = pd.to_datetime(out_df["date"]).max().strftime("%Y%m%d")
+
+    min_lat_str = fmt(min_lat)
+    max_lat_str = fmt(max_lat)
+    min_lon_str = fmt(min_lon)
+    max_lon_str = fmt(max_lon)
+
+    # -----------------------------
+    # 6. Save CSV
+    # -----------------------------
+    output_csv = (
+    home_dir + "/Output/"
+    + f"nighttime_AIMS_"
+    + f"lat{min_lat_str}_to_{max_lat_str}_"
+    + f"lon{min_lon_str}_to_{max_lon_str}_"
+    + f"{start_str}_{end_str}.csv")
+
+    out_df.to_csv(output_csv, index=False)
+
+    print(f"Saved CSV: {output_csv}")
+
+    return out_df
+
 
 # %%
 """
@@ -417,111 +675,6 @@ def extract_nighttime_AIMS_InWT_stdvals_single_site(aims_csv_filename, sun_csv_f
     ds.to_netcdf(output_nc)
 
     print(f"\nSaved NetCDF file: {output_nc}")
-
-
-# %%
-def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename=home_dir+"/Data/in-water/"+"AIMS_temp_loggers_20250111_20250430.csv", 
-                                        start_date=datetime.date(2025, 1, 11), end_date=datetime.date(2025, 4, 30), 
-                                        night_plus_minus_hrs=0):
-    """
-    Compute nighttime mean/std per day per logger (lat, lon, depth).
-    Nighttime defined using Astral sunrise/sunset (UTC).
-    """
-    # -----------------------------
-    # 1. Load + preprocess
-    # -----------------------------
-    df = pd.read_csv(aims_csv_filename)
-    df["time"] = pd.to_datetime(df["time"], format="mixed", dayfirst=True, utc=True)
-    df = df.sort_values("time")
-
-    # -----------------------------
-    # 2. Group by logger
-    # -----------------------------
-    group_cols = ["deployment_id", "lat", "lon", "depth"]
-    grouped = df.groupby(group_cols)
-
-    # -----------------------------
-    # 3. Loop over loggers
-    # -----------------------------
-    results = []
-    for (dep_id, lat, lon, depth), g in grouped:
-        print(f'Working on {dep_id, lat, lon, depth}...')
-        g_times = g["time"]
-        #g_temps = g["qc_val"].values.astype(float)
-
-        # Astral location (UTC timezone)
-        location = LocationInfo(latitude=lat, longitude=lon)
-        tz = pytz.UTC
-
-        # -------------------------
-        # 4. Loop over days
-        # -------------------------
-        current_date = start_date
-        while current_date <= end_date:
-            print(f'Working on {current_date}...')
-            date_ts = pd.Timestamp(current_date, tz="UTC")
-            next_date_ts = date_ts + pd.Timedelta(days=1)
-
-            # Astral requires date in local tz → we use UTC explicitly
-            s = sun(location.observer, date=current_date, tzinfo=tz)
-            sunset = s["sunset"]
-            sunrise_next = sun(location.observer, date=current_date + datetime.timedelta(days=1),tzinfo=tz)["sunrise"]
-
-            # Apply buffer
-            night_start = sunset + pd.Timedelta(hours=night_plus_minus_hrs)
-            night_end   = sunrise_next - pd.Timedelta(hours=night_plus_minus_hrs)
-
-            # Filter indices
-            mask = (g_times >= night_start) & (g_times <= night_end)
-            print(f'Finding watertemp values where {night_start} <= "times" <= {night_end}...')
-            night_vals = g.loc[mask, "qc_val"].values.astype(float)
-            pointcount = len(night_vals)
-            print(f'Found {pointcount} nighttime data points')
-
-            if pointcount == 0:
-                current_date += datetime.timedelta(days=1)
-                continue  # 🔥 skip this day entirely
-            
-            mean_val = np.mean(night_vals)
-            # TNT: may change here to be compared with SST std
-            std_val  = np.std(night_vals, ddof=1)
-
-            results.append({"date": current_date, "deployment_id": dep_id, "lat": lat, "lon": lon, "depth": depth,
-                            "nighttime_mean": mean_val, "nighttime_stdev": std_val, "pointcount": pointcount})
-            current_date += datetime.timedelta(days=1)
-
-    # -----------------------------
-    # 5. Convert to DataFrame
-    # -----------------------------
-    out_df = pd.DataFrame(results)
-    min_lat = out_df["lat"].min()
-    max_lat = out_df["lat"].max()
-    min_lon = out_df["lon"].min()
-    max_lon = out_df["lon"].max()
-    
-    start_str = pd.to_datetime(out_df["date"]).min().strftime("%Y%m%d")
-    end_str   = pd.to_datetime(out_df["date"]).max().strftime("%Y%m%d")
-
-    min_lat_str = fmt(min_lat)
-    max_lat_str = fmt(max_lat)
-    min_lon_str = fmt(min_lon)
-    max_lon_str = fmt(max_lon)
-
-    # -----------------------------
-    # 6. Save CSV
-    # -----------------------------
-    output_csv = (
-    home_dir + "/Output/"
-    + f"nighttime_AIMS_"
-    + f"lat{min_lat_str}_to_{max_lat_str}_"
-    + f"lon{min_lon_str}_to_{max_lon_str}_"
-    + f"{start_str}_{end_str}.csv")
-
-    out_df.to_csv(output_csv, index=False)
-
-    print(f"Saved CSV: {output_csv}")
-
-    return out_df
 
 
 # %%
