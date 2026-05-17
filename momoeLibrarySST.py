@@ -224,7 +224,7 @@ def save_ts_nc(start_date, end_date, thin_name=""):
 
 
 # %%
-
+# TNT: add metadata to the .nc file? robust definition of each variable etc
 def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_timeseries_20250111-20250131.nc",
                                       inwt_ts_filename = home_dir+"/Output/nighttime_AIMS_latminus23p9583_to_minus12p3923_lon143p7398_to_152p6686_20250111_20250429.nc"):
 
@@ -275,6 +275,8 @@ def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_
     print("Finding nearest SST pixels and SST and other variables...")
     sst_list = []
     corr_list = []
+    erro_list = []
+    vari_list = []
     
     for _, row in df.iterrows():
     
@@ -292,10 +294,14 @@ def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_
     
         sst_list.append(float(sst_pixel["sst"].values))
         corr_list.append(float(sst_pixel["correlation_map"].values))
+        erro_list.append(float(sst_pixel["error_analysis"].values))
+        vari_list.append(float(sst_pixel["sst_variability"].values))
     
     # Add to dataframe
     df["sst"] = sst_list
     df["correlation_map"] = corr_list
+    df["error_analysis"] = erro_list
+    df["sst_variability"] = vari_list
     
     # =========================
     # Compute SST mismatch
@@ -576,7 +582,7 @@ def extract_nighttime_AIMS_InWT_stdvals(aims_csv_filename=home_dir+"/Data/in-wat
                 continue  # 🔥 skip this day entirely
             
             mean_val = np.nanmean(night_vals)
-            # TNT: may change here to be compared with SST std
+            # may change here to be compared with SST std?
             std_val  = np.nanstd(night_vals) # default: ddof=0, within-night variability
 
             results.append({"date": current_date, "deployment_id": dep_id, "lat": lat, "lon": lon, "depth": depth,
