@@ -1,3 +1,4 @@
+.DS_Store
 requirements.txt
 *.txt
 .ipynb_checkpoints/
