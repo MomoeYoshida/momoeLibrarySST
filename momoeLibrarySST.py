@@ -48,6 +48,7 @@ from pathlib import Path
 import geopandas as gpd
 from shapely.geometry import Point
 import plotly.express as px
+import seaborn as sns
 
 # %%
 # HPC
@@ -271,6 +272,7 @@ def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_
     # Find nearest SST pixel
     # and extract SST + correlation_map
     # =========================
+    print("Finding nearest SST pixels and SST and other variables...")
     sst_list = []
     corr_list = []
     
@@ -298,6 +300,7 @@ def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_
     # =========================
     # Compute SST mismatch
     # =========================
+    print("Computing SST — InWT values...")
     # deltaT = SST — InWT
     df["deltaT"] = df["sst"] - df["nighttime_mean"]
     
@@ -331,6 +334,7 @@ def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_
     # =========================
     # Compute distance-to-coast in km
     # =========================
+    print("Computing dist_coast_km...")
     # Create a list of geographic/geometric point objects.
     geometry = gpd.points_from_xy(
         df.lon,
@@ -362,13 +366,38 @@ def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_
     # Compute distance to coast (Shortest (perpendicular) distance from each point to the nearest point on the coastline line).
     gdf_m["dist_coast_km"] = gdf_m.geometry.distance(coast_geom) / 1000
     df["dist_coast_km"] = gdf_m["dist_coast_km"].values
+
+    # =========================
+    # Compute temporal thermal variability: “How much does nighttime temperature fluctuate from day to day?”
+    # =========================
+    print("Computing thermal_variability_7d...")
+    # rolling standard deviation of nighttime mean, captures local temporal instability e.g., 7-day
+    df = df.sort_values(["deployment_id", "time"]) # sort by 'deployment_id' then 'time'
+    print(df)
+    # Compute the 7‑day rolling standard deviation of nighttime_mean for each deployment.
+    df["thermal_variability_7d"] = (
+        df.groupby("deployment_id")["nighttime_mean"] # x=nighttime_mean
+        .transform( # apply a function AND return results aligned with the original dataframe
+            lambda x: x.rolling(
+                window=7,
+                center=True,
+                min_periods=3 # min number of valid points/nighttime_mean values required to compute std
+            ).std() # std within the window
+        )
+    )
+    print(df)
+    
+    df = df.sort_index() # sort by index (original)
+    print(df)
     
     # =========================
     # Final dataframe
     # =========================
     print(df.head())
-    matchup_ds = xr.Dataset.from_dataframe(df)
     df = df.reset_index(drop=True)
+    matchup_ds = xr.Dataset.from_dataframe(df)
+    print("Final df:")
+    print(df)
     min_lat = df["lat"].min()
     max_lat = df["lat"].max()
     min_lon = df["lon"].min()
@@ -395,7 +424,13 @@ def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_
 # %%
 # Assumptions: one deployment_id per (lat, lon, depth) pair
 def save_InWT_ts_nc(csvfile=home_dir+"/Output/nighttime_AIMS_latminus23p9583_to_minus14p6485_lon145p3722_to_152p0739_20250111_20250429.csv"):
-    
+
+    outfile = Path(csvfile).with_suffix(".nc")
+    # --- Delete existing file if it exists ---
+    if os.path.exists(outfile):
+        print(f"Deleting existing file: {outfile}")
+        os.remove(outfile)
+        
     # -----------------------------
     # 1. Load CSV
     # -----------------------------
@@ -471,7 +506,6 @@ def save_InWT_ts_nc(csvfile=home_dir+"/Output/nighttime_AIMS_latminus23p9583_to_
     # -----------------------------
     # 7. Save to NetCDF
     # -----------------------------
-    outfile = Path(csvfile).with_suffix(".nc")
     ds.to_netcdf(outfile)
 
     
