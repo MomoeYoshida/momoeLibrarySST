@@ -49,6 +49,7 @@ import geopandas as gpd
 from shapely.geometry import Point
 import plotly.express as px
 import seaborn as sns
+import matplotlib.animation as animation
 
 # %%
 # HPC
@@ -374,7 +375,7 @@ def extract_sst_InWT_matchups_nc(sst_ts_filename = home_dir+"/Output/gbr_sst_cm_
     df["dist_coast_km"] = gdf_m["dist_coast_km"].values
 
     # =========================
-    # Compute temporal thermal variability: “How much does nighttime temperature fluctuate from day to day?”
+    # Compute temporal thermal variability: “How much does nighttime InWT fluctuate from day to day?”
     # =========================
     print("Computing thermal_variability_7d...")
     # rolling standard deviation of nighttime mean, captures local temporal instability e.g., 7-day
@@ -1058,3 +1059,117 @@ def map_da(da, figname, vmin=None, vmax=None, proj=ccrs.PlateCarree(), data_crs=
 
 
 
+
+# %%
+# save_animation_delta_sst(thin_file = home_dir+"/Output/gbr_sst_cm_er_var_timeseries_thin_5_20250111-20250315.nc")
+def save_animation_delta_sst(thin_file, control_file = home_dir+"/Output/gbr_sst_cm_er_var_timeseries_20250111-20250315.nc",
+                            cmap="RdBu_r", proj=ccrs.PlateCarree(), coast_res='10m', extent=(140,155,-25,-10)):
+
+    # Read files.
+    ds_control = xr.open_dataset(control_file)
+    ds_thin = xr.open_dataset(thin_file)
+    
+    # Compute difference (SSTthin-control).
+    delta_sst = ds_thin.sst - ds_control.sst
+    
+    # For symmetric colourbar:
+    vmax = float(abs(delta_sst).max())
+    vmin = -vmax
+    
+    fig, ax = plt.subplots(figsize=(7, 7), subplot_kw={'projection': proj})
+    ax.coastlines(resolution=coast_res, linewidth=1)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+    ax.add_feature(cfeature.LAND, facecolor='lightgray')
+    lon_min, lon_max, lat_min, lat_max = extent
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=proj)
+    
+    im = ax.imshow(
+        delta_sst.isel(time=0).values,
+        origin="lower",
+        extent=[
+            float(ds_control.lon.min()),
+            float(ds_control.lon.max()),
+            float(ds_control.lat.min()),
+            float(ds_control.lat.max())
+        ],
+        transform=proj,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax
+    )
+    cbar = plt.colorbar(im, ax=ax)
+    
+    def animate_delta_sst(t):
+        im.set_array(delta_sst.isel(time=t).values)
+        return [im]
+    
+    ani = animation.FuncAnimation(
+        fig,
+        animate_delta_sst,
+        frames=len(ds_control.time),
+        interval=300, # delay between frames in milliseconds
+        blit=True
+    )
+    
+    ani.save(home_dir+"/Output/"+"SSTthin5-SSTcontrol.gif", writer="pillow", dpi=200)
+    ani.save(home_dir+"/Output/"+"SSTthin5-SSTcontrol.html", writer="html", dpi=200)
+    
+    plt.close()
+
+
+# %%
+# save_animation_var(var="correlation_map", ds_file = home_dir+"/Output/gbr_sst_cm_er_var_timeseries_thin_5_20250111-20250315.nc")
+def save_animation_var(var, ds_file, cmap="viridis", proj=ccrs.PlateCarree(), coast_res='10m', extent=(140,155,-25,-10)):
+
+    # Read files.
+    ds = xr.open_dataset(ds_file)
+    data = ds[var]
+    
+    if var == "correlation_map":
+        vmin, vmax = 8, 32
+    else:
+        vmin = float(data.min())
+        vmax = float(data.max())
+    
+    fig, ax = plt.subplots(figsize=(7, 7), subplot_kw={'projection': proj})
+    ax.coastlines(resolution=coast_res, linewidth=1)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+    ax.add_feature(cfeature.LAND, facecolor='lightgray')
+    lon_min, lon_max, lat_min, lat_max = extent
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=proj)
+    
+    im = ax.imshow(
+        data.isel(time=0).values,
+        origin="lower",
+        extent=[
+            float(ds.lon.min()),
+            float(ds.lon.max()),
+            float(ds.lat.min()),
+            float(ds.lat.max())
+        ],
+        transform=proj,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax
+    )
+    cbar = plt.colorbar(im, ax=ax)
+    
+    def animate_var(t):
+        im.set_array(data.isel(time=t).values)
+        return [im]
+        
+    ani = animation.FuncAnimation(
+        fig,
+        animate_var,
+        frames=len(ds.time),
+        interval=300, # delay between frames in milliseconds
+        blit=True
+    )
+
+    base = ds_file.split("/")[-1].replace(".nc", "")
+    output_name = f"{home_dir}/Output/{var}_{base}"
+    
+    ani.save(output_name+".gif", writer="pillow", dpi=200)
+    ani.save(output_name+".html", writer="html", dpi=200)
+    
+    plt.close()
